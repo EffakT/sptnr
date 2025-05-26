@@ -23,6 +23,8 @@ if os.path.exists(".env"):
 # Record the start time
 start_time = time.time()
 
+CACHE_FILE = "song_update_cache.json"
+
 # Config
 NAV_BASE_URL = os.getenv("NAV_BASE_URL")
 NAV_USER = os.getenv("NAV_USER")
@@ -95,6 +97,25 @@ class NoColorFormatter(logging.Formatter):
         return super(NoColorFormatter, self).format(record)
 
 
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_cache(cache):
+    with open(CACHE_FILE, "w") as f:
+        json.dump(CACHE, f)
+
+def should_update(song_id):
+    if CACHE_DURATION == 0:
+        return True
+    last_update_ts = CACHE.get(song_id)
+    if not last_update_ts:
+        return True
+    return (time.time() - last_update_ts) > (CACHE_DURATION * 86400)
+
+
 # Set up the stream handler (console logging) without timestamp
 logging.basicConfig(
     level=logging.INFO, format="%(message)s", handlers=[logging.StreamHandler()]
@@ -165,6 +186,13 @@ parser.add_argument(
     type=int,
     help="limit to processing [NUM] artists from the start index",
 )
+parser.add_argument(
+    "-d",
+    "--cache-duration",
+    type=int,
+    default=7,
+    help="Number of days to cache song updates (0 to force update every time)",
+)
 
 parser.add_argument(
     "-v", "--version", action="version", version=f"%(prog)s {__version__}"
@@ -177,8 +205,11 @@ ARTIST_IDs = args.artist if args.artist else []
 ALBUM_IDs = args.album if args.album else []
 START = args.start
 LIMIT = args.limit
+CACHE_DURATION = args.cache_duration
 
 logging.info(f"{BOLD}Version:{RESET} {LIGHT_YELLOW}sptnr v{__version__}{RESET}")
+
+CACHE = load_cache()
 
 if args.preview:
     logging.info(f"{LIGHT_YELLOW}Preview mode, no changes will be made.{RESET}")
@@ -236,6 +267,11 @@ def process_track(track_id, artist_name, album, track_name):
 
     # Declare global variables
     global FOUND_AND_UPDATED, UNMATCHED_TRACKS, NOT_FOUND, TOTAL_TRACKS
+
+
+    if not should_update(track_id):
+        print(f"Skipping {track_name}, recently updated.")
+        return
 
     def search_spotify(query, max_retries=3):
 
@@ -314,6 +350,8 @@ def process_track(track_id, artist_name, album, track_name):
                 nav_url = f"{NAV_BASE_URL}/rest/setRating?u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=myapp&id={track_id}&rating={rating}"
                 requests.get(nav_url, timeout=5)
                 FOUND_AND_UPDATED += 1
+                CACHE[track_id] = time.time()
+                save_cache(CACHE)
             except requests.exceptions.RequestException as e:
                 logging.error(f"Failed to update rating in Navidrome: {e}")
     else:
