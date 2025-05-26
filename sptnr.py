@@ -446,7 +446,7 @@ else:
 
         logging.info("")
         logging.info(
-            f"Artist: {LIGHT_PURPLE}{ARTIST_NAME}{RESET} ({ARTIST_ID})[{index}]"
+            f"Artist: {LIGHT_PURPLE}{ARTIST_NAME}{RESET} ({ARTIST_ID})[{index+args.start}]"
         )
         process_artist(ARTIST_ID)
 
