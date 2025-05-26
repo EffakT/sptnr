@@ -210,89 +210,92 @@ def get_rating_from_popularity(popularity):
 
 
 def process_track(track_id, artist_name, album, track_name):
-    def search_spotify(query):
+
+    # Declare global variables
+    global FOUND_AND_UPDATED, UNMATCHED_TRACKS, NOT_FOUND, TOTAL_TRACKS
+
+    def search_spotify(query, max_retries=3):
         spotify_url = f"https://api.spotify.com/v1/search?q={query}&type=track&limit=1"
         headers = {"Authorization": f"Bearer {SPOTIFY_TOKEN}"}
 
-        try:
-            response = requests.get(spotify_url, headers=headers)
-        except requests.exceptions.ConnectionError:
-            logging.error(f"{LIGHT_RED}Spotify Error: Unable to reach server.{RESET}")
-            sys.exit(1)
+        time.sleep(1)
 
-        if response.status_code != 200:
-            if response.status_code == 429:
-                logging.error(
-                    f"{LIGHT_RED}Spotify Error {response.status_code}: Retry after {BOLD}{response.headers.get('Retry-After', 'some time')}s{RESET}"
-                )
-            else:
-                logging.error(
-                    f"{LIGHT_RED}Spotify Error {response.status_code}: {response.text}{RESET}"
-                )
-            sys.exit(1)
-        try:
-            return response.json()
-        except ValueError as e:
-            logging.error(
-                f"{LIGHT_RED}Spotify Error: Error decoding JSON from Spotify API: {e}{RESET}"
-            )
-            sys.exit(1)
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(spotify_url, headers=headers, timeout=10)
+                
+                # Handle rate limiting
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', 5))
+                    logging.warning(f"Rate limited. Retrying after {retry_after} seconds...")
+                    time.sleep(retry_after)
+                    continue
+                
+                # Handle server errors with retry
+                if response.status_code >= 500:
+                    wait_time = (attempt + 1) * 2  # Exponential backoff factor
+                    logging.warning(f"Spotify server error {response.status_code}. Attempt {attempt + 1}/{max_retries}. Waiting {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                
+                response.raise_for_status()
+                return response.json()
+                
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                wait_time = (attempt + 1) * 2
+                logging.warning(f"Connection error: {e}. Attempt {attempt + 1}/{max_retries}. Waiting {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Request failed: {e}")
+                break
+        
+        # If we get here, all retries failed
+        logging.error(f"Failed after {max_retries} attempts for query: {query}")
+        return None
 
     def remove_parentheses_content(s):
-        """Remove content inside parentheses from a string."""
         return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
 
-    encoded_track_name = url_encode(track_name)
-    encoded_artist_name = url_encode(artist_name)
-    encoded_album = url_encode(album)
+    search_attempts = [
+        # Primary attempt with all info
+        lambda: f"{url_encode(track_name)}%20artist:{url_encode(artist_name)}%20album:{url_encode(album)}",
+        
+        # Secondary attempt without album
+        lambda: f"{url_encode(remove_parentheses_content(track_name))}%20artist:{url_encode(artist_name)}",
+        
+        # Tertiary attempt with modified track name
+        lambda: f"{url_encode(track_name.replace('Part', 'Pt.'))}%20artist:{url_encode(artist_name)}"
+    ]
 
-    # Primary Search (with album)
-    spotify_data = search_spotify(
-        f"{encoded_track_name}%20artist:{encoded_artist_name}%20album:{encoded_album}"
-    )
+    spotify_data = None
+    for attempt in search_attempts:
+        spotify_data = search_spotify(attempt())
+        if spotify_data and spotify_data.get("tracks", {}).get("items"):
+            break
 
-    found_track = len(spotify_data.get("tracks", {}).get("items", [])) > 0
-
-    if not found_track:
-        # Secondary Search (without album and parentheses content)
-        sanitized_track_name = url_encode(remove_parentheses_content(track_name))
-        spotify_data = search_spotify(
-            f"{sanitized_track_name}%20artist:{encoded_artist_name}"
-        )
-        found_track = len(spotify_data.get("tracks", {}).get("items", [])) > 0
-
-    if not found_track:
-        # Tertiary Search (replace 'Part' with 'Pt.')
-        modified_track_name = track_name.replace("Part", "Pt.")
-        encoded_modified_track_name = url_encode(modified_track_name)
-        spotify_data = search_spotify(
-            f"{encoded_modified_track_name}%20artist:{encoded_artist_name}"
-        )
-        found_track = len(spotify_data.get("tracks", {}).get("items", []))
-
-    if found_track:
-        popularity = spotify_data["tracks"]["items"][0].get("popularity", 0)
+    if spotify_data and spotify_data.get("tracks", {}).get("items"):
+        # Success case - process the track
+        track = spotify_data["tracks"]["items"][0]
+        popularity = track.get("popularity", 0)
         rating = get_rating_from_popularity(popularity)
         popularity_str = f"{popularity} " if 0 <= popularity <= 9 else str(popularity)
-        message = f"    p:{LIGHT_CYAN}{popularity_str}{RESET} → r:{LIGHT_BLUE}{rating}{RESET} | {LIGHT_GREEN}{track_name}{RESET}"
-        logging.info(message)
+        
+        logging.info(f"    p:{LIGHT_CYAN}{popularity_str}{RESET} → r:{LIGHT_BLUE}{rating}{RESET} | {LIGHT_GREEN}{track_name}{RESET}")
+        
         if PREVIEW != 1:
-            nav_url = f"{NAV_BASE_URL}/rest/setRating?u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=myapp&id={track_id}&rating={rating}"
-            requests.get(nav_url)
-        global FOUND_AND_UPDATED
-        FOUND_AND_UPDATED += 1
+            try:
+                nav_url = f"{NAV_BASE_URL}/rest/setRating?u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=myapp&id={track_id}&rating={rating}"
+                requests.get(nav_url, timeout=5)
+                FOUND_AND_UPDATED += 1
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Failed to update rating in Navidrome: {e}")
     else:
-        logging.info(
-            f"    p:{LIGHT_RED}??{RESET} → r:{LIGHT_BLUE}0{RESET} | {LIGHT_RED}(not found) {track_name}{RESET}"
-        )
-        global UNMATCHED_TRACKS
+        logging.info(f"    p:{LIGHT_RED}??{RESET} → r:{LIGHT_BLUE}0{RESET} | {LIGHT_RED}(not found) {track_name}{RESET}")
         UNMATCHED_TRACKS.append(f"{artist_name} - {album} - {track_name}")
-        global NOT_FOUND
         NOT_FOUND += 1
 
-    global TOTAL_TRACKS
     TOTAL_TRACKS += 1
-
 
 def process_album(album_id):
     nav_url = f"{NAV_BASE_URL}/rest/getAlbum?id={album_id}&u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=spotify_sync&f=json"
