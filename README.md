@@ -138,6 +138,7 @@ The script supports various options for flexible usage. Below are examples of ho
 - `-b, --album ALBUM_ID`: Process a specific album. Multiple albums can be specified.
 - `-s, --start START_INDEX`: Start processing from the artist at the specified index (0-based).
 - `-l, --limit LIMIT`: Limit the processing to a specific number of artists from the start index.
+- `-d, --cache-duration DURATION`: Number of days to cache song updates (0 to force update every time).
 
 ### Command Formats
 
