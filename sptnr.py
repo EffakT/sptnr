@@ -100,10 +100,19 @@ class NoColorFormatter(logging.Formatter):
 
 
 def load_lock():
-    if os.path.exists(LOCK_FILE):
+    if not os.path.exists(LOCK_FILE):
+        return {}
+    try:
         with open(LOCK_FILE, "r") as f:
             return json.load(f)
-    return {}
+    except json.JSONDecodeError:
+        logging.error(f"{LIGHT_RED}Lock file '{LOCK_FILE}' is corrupt or not valid JSON. Starting with an empty lock.{RESET}")
+        # Optionally, back up the corrupt file
+        os.rename(LOCK_FILE, LOCK_FILE + ".corrupt")
+        return {}
+    except Exception as e:
+        logging.error(f"{LIGHT_RED}Error loading lock file '{LOCK_FILE}': {e}{RESET}")
+        return {}
 
 def save_lock(lock):
     with open(LOCK_FILE, "w") as f:
@@ -207,6 +216,13 @@ parser.add_argument(
     default=7,
     help="Number of days to lock song updates (0 to force update every time)",
 )
+parser.add_argument(
+    "-j",
+    "--lock-jitter",
+    type=int,
+    default=24,
+    help="Number of hours to add random jitter to the lock duration",
+)
 
 parser.add_argument(
     "-v", "--version", action="version", version=f"%(prog)s {__version__}"
@@ -220,7 +236,7 @@ ALBUM_IDs = args.album if args.album else []
 START = args.start
 LIMIT = args.limit
 BASE_LOCK_DURATION = args.lock_duration
-LOCK_JITTER = 24
+LOCK_JITTER = args.lock_jitter
 
 logging.info(f"{BOLD}Version:{RESET} {LIGHT_YELLOW}sptnr v{__version__}{RESET}")
 
