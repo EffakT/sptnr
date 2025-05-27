@@ -10,11 +10,13 @@ import re
 import sys
 import time
 import urllib.parse
+import random
 
 from dotenv import load_dotenv
 import requests
 from colorama import init, Fore, Style
 from tqdm import tqdm
+from datetime import timedelta
 
 # Load environment variables from .env file if it exists
 if os.path.exists(".env"):
@@ -23,7 +25,7 @@ if os.path.exists(".env"):
 # Record the start time
 start_time = time.time()
 
-CACHE_FILE = "song_update_cache.json"
+LOCK_FILE = "song_update_lock.json"
 
 # Config
 NAV_BASE_URL = os.getenv("NAV_BASE_URL")
@@ -97,24 +99,36 @@ class NoColorFormatter(logging.Formatter):
         return super(NoColorFormatter, self).format(record)
 
 
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r") as f:
+def load_lock():
+    if os.path.exists(LOCK_FILE):
+        with open(LOCK_FILE, "r") as f:
             return json.load(f)
     return {}
 
-def save_cache(cache):
-    with open(CACHE_FILE, "w") as f:
-        json.dump(CACHE, f)
+def save_lock(lock):
+    with open(LOCK_FILE, "w") as f:
+        json.dump(LOCK, f)
 
 def should_update(song_id):
-    if CACHE_DURATION == 0:
+    lock_expiry = get_lock_expiry()
+    if lock_expiry == 0:
         return True
-    last_update_ts = CACHE.get(song_id)
+    last_update_ts = LOCK.get(song_id)
     if not last_update_ts:
         return True
-    return (time.time() - last_update_ts) > (CACHE_DURATION * 86400)
+    return (time.time() - last_update_ts) > (lock_expiry * 86400)
 
+
+def get_lock_expiry():
+    if (BASE_LOCK_DURATION == 0):
+        return 0  # No lock duration, force update every time
+
+    base_expiry = timedelta(days=BASE_LOCK_DURATION)
+    jitter = timedelta(hours=random.uniform(-LOCK_JITTER/2, LOCK_JITTER/2))
+    expiry = base_expiry + jitter
+    # Ensure expiry is at least 1 day
+    expiry = max(expiry, timedelta(days=1))
+    return time.time() + expiry.total_seconds()
 
 # Set up the stream handler (console logging) without timestamp
 logging.basicConfig(
@@ -188,10 +202,10 @@ parser.add_argument(
 )
 parser.add_argument(
     "-d",
-    "--cache-duration",
+    "--lock-duration",
     type=int,
     default=7,
-    help="Number of days to cache song updates (0 to force update every time)",
+    help="Number of days to lock song updates (0 to force update every time)",
 )
 
 parser.add_argument(
@@ -205,11 +219,12 @@ ARTIST_IDs = args.artist if args.artist else []
 ALBUM_IDs = args.album if args.album else []
 START = args.start
 LIMIT = args.limit
-CACHE_DURATION = args.cache_duration
+BASE_LOCK_DURATION = args.lock_duration
+LOCK_JITTER = 24
 
 logging.info(f"{BOLD}Version:{RESET} {LIGHT_YELLOW}sptnr v{__version__}{RESET}")
 
-CACHE = load_cache()
+LOCK = load_lock()
 
 if args.preview:
     logging.info(f"{LIGHT_YELLOW}Preview mode, no changes will be made.{RESET}")
@@ -350,14 +365,16 @@ def process_track(track_id, artist_name, album, track_name):
                 nav_url = f"{NAV_BASE_URL}/rest/setRating?u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=myapp&id={track_id}&rating={rating}"
                 requests.get(nav_url, timeout=5)
                 FOUND_AND_UPDATED += 1
-                CACHE[track_id] = time.time()
-                save_cache(CACHE)
+                LOCK[track_id] = time.time()
+                save_lock(LOCK)
             except requests.exceptions.RequestException as e:
                 logging.error(f"Failed to update rating in Navidrome: {e}")
     else:
         logging.info(f"    p:{LIGHT_RED}??{RESET} → r:{LIGHT_BLUE}0{RESET} | {LIGHT_RED}(not found) {track_name}{RESET}")
         UNMATCHED_TRACKS.append(f"{artist_name} - {album} - {track_name}")
         NOT_FOUND += 1
+        LOCK[track_id] = time.time()
+        save_lock(LOCK)
 
     TOTAL_TRACKS += 1
 
