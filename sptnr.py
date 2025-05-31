@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.parse
 import random
+import tempfile
 
 from dotenv import load_dotenv
 import requests
@@ -107,7 +108,6 @@ def load_lock():
             return json.load(f)
     except json.JSONDecodeError:
         logging.error(f"{LIGHT_RED}Lock file '{LOCK_FILE}' is corrupt or not valid JSON. Starting with an empty lock.{RESET}")
-        # Optionally, back up the corrupt file
         os.rename(LOCK_FILE, LOCK_FILE + ".corrupt")
         return {}
     except Exception as e:
@@ -115,8 +115,12 @@ def load_lock():
         return {}
 
 def save_lock(lock):
-    with open(LOCK_FILE, "w") as f:
-        json.dump(LOCK, f)
+    # Write to a temp file first, then atomically replace the lock file
+    dir_name = os.path.dirname(LOCK_FILE) or "."
+    with tempfile.NamedTemporaryFile("w", dir=dir_name, delete=False) as tf:
+        json.dump(lock, tf)
+        tempname = tf.name
+    os.replace(tempname, LOCK_FILE)
 
 def should_update(song_id):
     lock_expiry = get_lock_expiry()
@@ -242,6 +246,8 @@ logging.info(f"{BOLD}Version:{RESET} {LIGHT_YELLOW}sptnr v{__version__}{RESET}")
 
 LOCK = load_lock()
 
+SHOULD_DELAY = False
+
 if args.preview:
     logging.info(f"{LIGHT_YELLOW}Preview mode, no changes will be made.{RESET}")
     PREVIEW = 1
@@ -305,13 +311,13 @@ def process_track(track_id, artist_name, album, track_name):
         return
 
     def search_spotify(query, max_retries=3):
+        global SHOULD_DELAY
+        SHOULD_DELAY = True
 
         SPOTIFY_TOKEN = spotify_token_manager.get_token()
 
         spotify_url = f"https://api.spotify.com/v1/search?q={query}&type=track&limit=1"
         headers = {"Authorization": f"Bearer {SPOTIFY_TOKEN}"}
-
-        time.sleep(1)
 
         for attempt in range(max_retries):
             try:
@@ -348,7 +354,14 @@ def process_track(track_id, artist_name, album, track_name):
         return None
 
     def remove_parentheses_content(s):
-        return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+        # Only remove parentheses if they do NOT contain important keywords
+        keywords = ["remix", "instrumental", "edit", "version", "mix", "karaoke", "live", "acoustic", "demo"]
+        def replacer(match):
+            content = match.group(1).lower()
+            if any(k in content for k in keywords):
+                return f"({match.group(1)})"  # Keep it
+            return ""
+        return re.sub(r"\((.*?)\)", replacer, s).strip()
 
     search_attempts = [
         # Primary attempt with all info
@@ -363,6 +376,7 @@ def process_track(track_id, artist_name, album, track_name):
 
     spotify_data = None
     for attempt in search_attempts:
+        # logging.info(f"Searching Spotify for: {LIGHT_CYAN}{attempt()}{RESET}")
         spotify_data = search_spotify(attempt())
         if spotify_data and spotify_data.get("tracks", {}).get("items"):
             break
@@ -374,7 +388,10 @@ def process_track(track_id, artist_name, album, track_name):
         rating = get_rating_from_popularity(popularity)
         popularity_str = f"{popularity} " if 0 <= popularity <= 9 else str(popularity)
         
-        logging.info(f"    p:{LIGHT_CYAN}{popularity_str}{RESET} → r:{LIGHT_BLUE}{rating}{RESET} | {LIGHT_GREEN}{track_name}{RESET}")
+        #log matched track name from spotify
+        sp_track_name = track["name"]
+
+        logging.info(f"    p:{LIGHT_CYAN}{popularity_str}{RESET} → r:{LIGHT_BLUE}{rating}{RESET} | {LIGHT_GREEN}{track_name} - {sp_track_name}{RESET}")
         
         if PREVIEW != 1:
             try:
@@ -389,12 +406,30 @@ def process_track(track_id, artist_name, album, track_name):
         logging.info(f"    p:{LIGHT_RED}??{RESET} → r:{LIGHT_BLUE}0{RESET} | {LIGHT_RED}(not found) {track_name}{RESET}")
         UNMATCHED_TRACKS.append(f"{artist_name} - {album} - {track_name}")
         NOT_FOUND += 1
-        LOCK[track_id] = time.time()
-        save_lock(LOCK)
+
+        # If not found, set rating to 0
+        if PREVIEW != 1:
+            try:
+                nav_url = f"{NAV_BASE_URL}/rest/setRating?u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=myapp&id={track_id}&rating=0"
+                requests.get(nav_url, timeout=5)
+                LOCK[track_id] = time.time()
+                save_lock(LOCK)
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Failed to update rating in Navidrome: {e}")
+        
+        
 
     TOTAL_TRACKS += 1
 
 def process_album(album_id):
+
+    global SHOULD_DELAY
+
+    if SHOULD_DELAY:
+        # sleep for a short time to avoid hitting rate limits too quickly
+        time.sleep(4)
+
+    SHOULD_DELAY = False
     nav_url = f"{NAV_BASE_URL}/rest/getAlbum?id={album_id}&u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=spotify_sync&f=json"
     response = requests.get(nav_url).json()
 
