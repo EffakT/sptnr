@@ -26,7 +26,9 @@ if os.path.exists(".env"):
 # Record the start time
 start_time = time.time()
 
-LOCK_FILE = "song_update_lock.json"
+LOCK_DIR = "logs"
+LOCK_FILENAME = "song_update_lock.json"
+LOCK_FILE = LOCK_DIR + "/" + LOCK_FILENAME
 
 # Config
 NAV_BASE_URL = os.getenv("NAV_BASE_URL")
