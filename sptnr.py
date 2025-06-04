@@ -570,8 +570,13 @@ TOTAL_BLOCKS = 20
 color_found = LIGHT_GREEN if FOUND_AND_UPDATED == TOTAL_TRACKS else LIGHT_YELLOW
 color_found_white = LIGHT_GREEN if FOUND_AND_UPDATED == TOTAL_TRACKS else BOLD
 color_not_found = LIGHT_GREEN if NOT_FOUND == 0 else LIGHT_RED
-blocks_found = "█" * round(FOUND_AND_UPDATED * TOTAL_BLOCKS / TOTAL_TRACKS)
-blocks_not_found = "█" * (TOTAL_BLOCKS - len(blocks_found))
+
+if TOTAL_TRACKS == 0:
+    blocks_found = ""
+    blocks_not_found = ""
+else:
+    blocks_found = "█" * round(FOUND_AND_UPDATED * TOTAL_BLOCKS / TOTAL_TRACKS)
+    blocks_not_found = "█" * (TOTAL_BLOCKS - len(blocks_found))
 full_blocks_found = f"{color_found_white}{blocks_found}{RESET}"
 full_blocks_not_found = f"{color_not_found}{blocks_not_found}{RESET}"
 
